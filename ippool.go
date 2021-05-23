@@ -208,6 +208,5 @@ func (ip *ipPool) GetRandomTarget() (*Target, error) {
 	if len(results) == 0 {
 		return nil, ErrNoResult
 	}
-	rand.Seed(time.Now().UnixNano())
 	return results[rand.Intn(len(results))].Target, nil
 }
