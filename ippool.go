@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"strconv"
@@ -13,6 +12,8 @@ import (
 )
 
 var ErrNoResult = errors.New("empty result")
+
+var defaultInterval = time.Duration(time.Minute * 3)
 
 // Target
 type Target struct {
@@ -58,7 +59,12 @@ func (result Result) Failed() int {
 	return result.Counter - result.SuccessCounter
 }
 
-type ipPool struct {
+type Options struct {
+	Interval time.Duration
+}
+
+type Pool struct {
+	opt Options
 	sync.RWMutex
 	stop     chan bool
 	targets  []*Target
@@ -66,38 +72,51 @@ type ipPool struct {
 	interval time.Duration
 }
 
-func NewIPPool(interval time.Duration) *ipPool {
-	return &ipPool{
-		stop:     make(chan bool, 1),
-		interval: interval,
+func New(opts ...Options) *Pool {
+	p := &Pool{
+		stop: make(chan bool, 1),
+	}
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	p.opt = o
+
+	p.prepareOptions()
+	return p
+}
+
+func (p *Pool) prepareOptions() {
+	if p.opt.Interval == 0 {
+		p.opt.Interval = defaultInterval
 	}
 }
 
-func (ip *ipPool) AddTarget(target *Target) {
-	ip.Lock()
-	defer ip.Unlock()
-	ip.targets = append(ip.targets, target)
+func (p *Pool) AddTarget(target *Target) {
+	p.Lock()
+	defer p.Unlock()
+	p.targets = append(p.targets, target)
 }
 
-func (ip *ipPool) Reset() {
-	ip.Lock()
-	defer ip.Unlock()
-	ip.targets = nil
+func (p *Pool) Reset() {
+	p.Lock()
+	defer p.Unlock()
+	p.targets = nil
 }
 
-func (ip *ipPool) Start(ctx context.Context) error {
+func (p *Pool) Start(ctx context.Context) error {
 	go func() {
 		t := time.NewTicker(1)
 		defer t.Stop()
 		for {
 			select {
-			case <-ip.stop:
+			case <-p.stop:
 				return
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				ip.pinger()
-				t.Reset(ip.interval)
+				p.Pinger()
+				t.Reset(p.interval)
 			}
 		}
 	}()
@@ -105,37 +124,36 @@ func (ip *ipPool) Start(ctx context.Context) error {
 	return nil
 }
 
-func (ip *ipPool) Results() []*Result {
-	ip.RLock()
-	defer ip.RUnlock()
-	results := ip.results
+func (p *Pool) Results() []*Result {
+	p.RLock()
+	defer p.RUnlock()
+	results := p.results
 	return results
 }
 
-func (ip *ipPool) Targets() []*Target {
-	ip.RLock()
-	defer ip.RUnlock()
-	targets := ip.targets
+func (p *Pool) Targets() []*Target {
+	p.RLock()
+	defer p.RUnlock()
+	targets := p.targets
 	return targets
 }
 
-func (ip *ipPool) pinger() {
+func (p *Pool) Pinger() {
 	resultChan := make(chan *Result)
-	for _, target := range ip.Targets() {
-		go ip.ping(target, resultChan)
+	for _, target := range p.Targets() {
+		go p.ping(target, resultChan)
 	}
 	var results []*Result
-	for range ip.targets {
+	for range p.targets {
 		result := <-resultChan
 		results = append(results, result)
-		log.Println(result)
 	}
-	ip.Lock()
-	ip.results = results
-	ip.Unlock()
+	p.Lock()
+	p.results = results
+	p.Unlock()
 }
 
-func (ip *ipPool) ping(target *Target, ch chan<- *Result) {
+func (p *Pool) ping(target *Target, ch chan<- *Result) {
 	result := &Result{
 		Target: target,
 	}
@@ -178,13 +196,13 @@ func (ip *ipPool) ping(target *Target, ch chan<- *Result) {
 
 }
 
-func (ip *ipPool) Stop(ctx context.Context) error {
-	ip.stop <- true
+func (p *Pool) Stop(ctx context.Context) error {
+	p.stop <- true
 	return nil
 }
 
-func (ip *ipPool) GetFastestTarget() (*Target, error) {
-	results := ip.Results()
+func (p *Pool) GetFastestTarget() (*Target, error) {
+	results := p.Results()
 	if len(results) == 0 {
 		return nil, ErrNoResult
 	}
@@ -197,10 +215,10 @@ func (ip *ipPool) GetFastestTarget() (*Target, error) {
 	return res.Target, nil
 }
 
-func (ip *ipPool) GetRandomTarget() (*Target, error) {
+func (p *Pool) GetRandomTarget() (*Target, error) {
 	results := make([]*Result, 0)
 
-	for _, result := range ip.Results() {
+	for _, result := range p.Results() {
 		if result.SuccessCounter > result.Failed() {
 			results = append(results, result)
 		}
